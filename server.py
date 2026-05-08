@@ -310,7 +310,23 @@ def handle_tools_call(request_id, params):
             }
         }
 
-    result_text = TOOL_HANDLERS[tool_name](arguments)
+    try:
+        result_text = TOOL_HANDLERS[tool_name](arguments)
+    except Exception as e:
+        log(f"Tool error ({tool_name}): {e}")
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps({"status": "ERROR", "reasoning": str(e)})
+                    }
+                ]
+            }
+        }
+
     return {
         "jsonrpc": "2.0",
         "id": request_id,
