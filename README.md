@@ -2,13 +2,25 @@
 
 ## Overview
 
-MCP server exposing MTCP evaluation data to sdcgovernance 4.0.1 via JSON-RPC 2.0 over stdio.
+MCP server exposing MTCP evaluation data to sdcgovernance 4.0.1 via JSON-RPC 2.0.
 
 - Server name: mtcp-governance
 - Protocol version: 2024-11-05
-- Transport: stdio (JSON-RPC 2.0, one JSON object per line)
-- Live endpoint: mtcp-mcp-server.fly.dev
-- Health check: GET /health on port 8080
+- Transport: HTTP POST (primary) and stdio (local development)
+- Live endpoint: https://mtcp-mcp-server.fly.dev/
+- Health check: GET https://mtcp-mcp-server.fly.dev/health
+
+## HTTP Transport
+
+The server accepts JSON-RPC 2.0 requests via HTTP POST to the root path `/` on port 8080. This is the primary transport for remote clients including sdcgovernance.
+
+```bash
+curl -X POST https://mtcp-mcp-server.fly.dev/ \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"api_key":"your-key"}}'
+```
+
+The stdio transport remains available for local development and air-gapped deployments.
 
 ## Local Development
 
@@ -20,7 +32,7 @@ python server.py
 
 If DATABASE_URL is not set, the server falls back to localhost defaults. If MTCP_API_KEY is not set, authentication is disabled (local development only).
 
-The server reads JSON-RPC requests from stdin and writes responses to stdout. A health check HTTP server starts automatically on port 8080.
+The server starts an HTTP server on port 8080 (POST / for JSON-RPC, GET /health) and also reads JSON-RPC from stdin for local stdio usage.
 
 ## Deployment to Fly.io
 
@@ -69,25 +81,26 @@ Fly.io polls this endpoint every 30 seconds to confirm the process is alive.
 
 ## Connecting sdcgovernance to the Live Endpoint
 
-Timothy's sdcgovernance instance connects to the live MTCP MCP server by configuring the MCP client to spawn a process that pipes JSON-RPC over stdio. For remote deployment, sdcgovernance can use an HTTP-to-stdio bridge or configure direct network access:
+Timothy's sdcgovernance instance sends HTTP POST requests directly to the live endpoint:
 
-```json
-{
-  "mcpServers": {
-    "mtcp-governance": {
-      "command": "python",
-      "args": ["server.py"],
-      "cwd": "/path/to/MTCP_MCP_Server",
-      "env": {
-        "DATABASE_URL": "postgresql://user:pass@host:5432/mtcp",
-        "MTCP_API_KEY": "shared-api-key"
-      }
+```bash
+curl -X POST https://mtcp-mcp-server.fly.dev/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "api_key": "shared-api-key",
+      "name": "get_evidence_pack",
+      "arguments": {"model_id": "gpt-4o"}
     }
-  }
-}
+  }'
 ```
 
-For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker network and sdcgovernance connects via docker exec as documented in the Sovereign Runtime README.
+No stdio bridge required. sdcgovernance can call the MTCP MCP server as a standard HTTP JSON-RPC endpoint from any language or framework.
+
+For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker network and sdcgovernance connects via docker exec (stdio) as documented in the Sovereign Runtime README.
 
 ## Protocol Flow
 

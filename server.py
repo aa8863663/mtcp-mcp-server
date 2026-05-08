@@ -1,6 +1,6 @@
 """
 MTCP Governance MCP Server
-Protocol: JSON-RPC 2.0 over stdio
+Protocol: JSON-RPC 2.0 over stdio and HTTP POST
 Version: 2024-11-05
 Server name: mtcp-governance
 """
@@ -14,7 +14,7 @@ import psycopg2
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from health import start_health_server
+from health import start_http_server, set_jsonrpc_handler
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -325,6 +325,34 @@ def handle_tools_call(request_id, params):
     }
 
 
+def route_request(request):
+    method = request.get("method")
+    request_id = request.get("id")
+    params = request.get("params", {})
+
+    if method == "initialize":
+        return handle_initialize(request_id)
+    elif method == "notifications/initialized":
+        return None
+    elif method == "tools/list":
+        if not check_auth(params):
+            return auth_error(request_id)
+        return handle_tools_list(request_id)
+    elif method == "tools/call":
+        if not check_auth(params):
+            return auth_error(request_id)
+        return handle_tools_call(request_id, params)
+    else:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32601,
+                "message": f"Method not found: {method}"
+            }
+        }
+
+
 def process_stdin():
     for line in sys.stdin:
         line = line.strip()
@@ -332,33 +360,9 @@ def process_stdin():
             continue
 
         request = json.loads(line)
-        method = request.get("method")
-        request_id = request.get("id")
-        params = request.get("params", {})
-
-        if method == "initialize":
-            response = handle_initialize(request_id)
-        elif method == "notifications/initialized":
+        response = route_request(request)
+        if response is None:
             continue
-        elif method == "tools/list":
-            if not check_auth(params):
-                response = auth_error(request_id)
-            else:
-                response = handle_tools_list(request_id)
-        elif method == "tools/call":
-            if not check_auth(params):
-                response = auth_error(request_id)
-            else:
-                response = handle_tools_call(request_id, params)
-        else:
-            response = {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32601,
-                    "message": f"Method not found: {method}"
-                }
-            }
 
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
@@ -379,15 +383,17 @@ def main():
 
     check_db_connection()
 
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
-    log("Health check server started on port 8080")
+    set_jsonrpc_handler(route_request)
+
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+    log("HTTP server started on port 8080 (GET /health + POST / JSON-RPC)")
 
     stdin_thread = threading.Thread(target=process_stdin, daemon=True)
     stdin_thread.start()
     log("stdio JSON-RPC listener started")
 
-    health_thread.join()
+    http_thread.join()
 
 
 if __name__ == "__main__":
