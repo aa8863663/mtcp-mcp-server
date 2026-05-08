@@ -325,23 +325,7 @@ def handle_tools_call(request_id, params):
     }
 
 
-def main():
-    if not MTCP_API_KEY:
-        log("WARNING: MTCP_API_KEY not set, running in unauthenticated mode (local development only)")
-    else:
-        log("Authentication enabled")
-
-    if not DATABASE_URL:
-        log("WARNING: DATABASE_URL not set, using localhost defaults")
-    else:
-        log(f"Using DATABASE_URL (host masked)")
-
-    check_db_connection()
-
-    health_thread = threading.Thread(target=start_health_server, daemon=True)
-    health_thread.start()
-    log("Health check server started on port 8080")
-
+def process_stdin():
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -378,6 +362,32 @@ def main():
 
         sys.stdout.write(json.dumps(response) + "\n")
         sys.stdout.flush()
+
+    log("stdin closed")
+
+
+def main():
+    if not MTCP_API_KEY:
+        log("WARNING: MTCP_API_KEY not set, running in unauthenticated mode (local development only)")
+    else:
+        log("Authentication enabled")
+
+    if not DATABASE_URL:
+        log("WARNING: DATABASE_URL not set, using localhost defaults")
+    else:
+        log(f"Using DATABASE_URL (host masked)")
+
+    check_db_connection()
+
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    log("Health check server started on port 8080")
+
+    stdin_thread = threading.Thread(target=process_stdin, daemon=True)
+    stdin_thread.start()
+    log("stdio JSON-RPC listener started")
+
+    health_thread.join()
 
 
 if __name__ == "__main__":
