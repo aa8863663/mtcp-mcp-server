@@ -2,7 +2,7 @@
 
 ## Overview
 
-MCP server exposing MTCP evaluation data to sdcgovernance 4.0.1 via JSON-RPC 2.0.
+MCP server exposing MTCP evaluation data to sdcgovernance 4.0.2 via JSON-RPC 2.0.
 
 - Server name: mtcp-governance
 - Protocol version: 2024-11-05
