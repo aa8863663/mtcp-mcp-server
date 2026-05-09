@@ -2,25 +2,13 @@
 
 ## Overview
 
-MCP server exposing MTCP evaluation data to sdcgovernance 4.0.2 via JSON-RPC 2.0.
+MCP server exposing MTCP evaluation data to sdcgovernance 4.0.3 via JSON-RPC 2.0 over stdio.
 
 - Server name: mtcp-governance
 - Protocol version: 2024-11-05
-- Transport: HTTP POST (primary) and stdio (local development)
-- Live endpoint: https://mtcp-mcp-server.fly.dev/
-- Health check: GET https://mtcp-mcp-server.fly.dev/health
-
-## HTTP Transport
-
-The server accepts JSON-RPC 2.0 requests via HTTP POST to the root path `/` on port 8080. This is the primary transport for remote clients including sdcgovernance.
-
-```bash
-curl -X POST https://mtcp-mcp-server.fly.dev/ \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"api_key":"your-key"}}'
-```
-
-The stdio transport remains available for local development and air-gapped deployments.
+- Transport: stdio (JSON-RPC 2.0, one JSON object per line)
+- Live endpoint: mtcp-mcp-server.fly.dev
+- Health check: GET /health on port 8080
 
 ## Local Development
 
@@ -32,7 +20,7 @@ python server.py
 
 If DATABASE_URL is not set, the server falls back to localhost defaults. If MTCP_API_KEY is not set, authentication is disabled (local development only).
 
-The server starts an HTTP server on port 8080 (POST / for JSON-RPC, GET /health) and also reads JSON-RPC from stdin for local stdio usage.
+The server reads JSON-RPC requests from stdin and writes responses to stdout. A health check HTTP server starts automatically on port 8080.
 
 ## Deployment to Fly.io
 
@@ -81,26 +69,25 @@ Fly.io polls this endpoint every 30 seconds to confirm the process is alive.
 
 ## Connecting sdcgovernance to the Live Endpoint
 
-Timothy's sdcgovernance instance sends HTTP POST requests directly to the live endpoint:
+Timothy's sdcgovernance instance connects to the live MTCP MCP server by configuring the MCP client to spawn a process that pipes JSON-RPC over stdio. For remote deployment, sdcgovernance can use an HTTP-to-stdio bridge or configure direct network access:
 
-```bash
-curl -X POST https://mtcp-mcp-server.fly.dev/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "api_key": "shared-api-key",
-      "name": "get_evidence_pack",
-      "arguments": {"model_id": "gpt-4o"}
+```json
+{
+  "mcpServers": {
+    "mtcp-governance": {
+      "command": "python",
+      "args": ["server.py"],
+      "cwd": "/path/to/MTCP_MCP_Server",
+      "env": {
+        "DATABASE_URL": "postgresql://user:pass@host:5432/mtcp",
+        "MTCP_API_KEY": "shared-api-key"
+      }
     }
-  }'
+  }
+}
 ```
 
-No stdio bridge required. sdcgovernance can call the MTCP MCP server as a standard HTTP JSON-RPC endpoint from any language or framework.
-
-For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker network and sdcgovernance connects via docker exec (stdio) as documented in the Sovereign Runtime README.
+For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker network and sdcgovernance connects via docker exec as documented in the Sovereign Runtime README.
 
 ## Protocol Flow
 
@@ -109,7 +96,7 @@ For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker 
 Request:
 
 ```json
-{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "sdcgovernance", "version": "4.0.1"}}}
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "sdcgovernance", "version": "4.0.3"}}}
 ```
 
 Response:
@@ -224,23 +211,23 @@ Response:
 
 ## Integration Flow with sdcgovernance evaluate_decision
 
-The full integration flow for automated deployment governance:
+The full integration flow for automated deployment governance (sdcgovernance 4.0.3):
 
 1. sdcgovernance calls get_evidence_pack via MTCP MCP server
 2. MTCP MCP server queries PostgreSQL and returns Evidence Pack JSON
-3. sdcgovernance passes Evidence Pack directly as extra_context to evaluate_decision
-4. DMN decision table evaluates Evidence Pack fields against rules
-5. evaluate_decision returns a Receipt with PERMIT, DENY, INDETERMINATE, or NOT_APPLICABLE
-6. Receipt is appended to the ReceiptChain with SHA-256 hash linking to previous Receipt
+3. sdcgovernance adds data_classification and jurisdiction to extra_context, passes to evaluate_decision
+4. DMN decision table evaluates Evidence Pack fields against array-style conditions
+5. evaluate_decision returns a tamper-evident Receipt with PERMIT, DENY, INDETERMINATE, or NOT_APPLICABLE
+6. Receipt includes receipt_hash (SHA-256 over canonical JSON) and is appended to the ReceiptChain
 
 Step 3 as a tool call:
 
 ```json
-{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "evaluate_decision", "arguments": {"instance_id": "deepseek-r1", "instance_version": "2025-01-20", "data_classification": "Internal", "jurisdiction": "single_language", "table_json": "{\"table_id\":\"mtcp_deployment_governance\",\"hit_policy\":\"FIRST\",\"rules\":[{\"id\":\"MTCP-R1\",\"conditions\":{\"regime_classification\":{\"operator\":\"==\",\"value\":\"R3\"},\"data_classification\":{\"operator\":\">=\",\"value\":\"Restricted\"}},\"decision\":\"DENY\",\"reasoning\":\"Regime 3 model denied for restricted data processing\"},{\"id\":\"MTCP-R5\",\"conditions\":{\"regime_classification\":{\"operator\":\"==\",\"value\":\"R1\"},\"overall_grade\":{\"operator\":\"in\",\"value\":[\"A\",\"B\"]}},\"decision\":\"PERMIT\",\"reasoning\":\"Model meets deployment-ready threshold\"},{\"id\":\"MTCP-DEFAULT\",\"conditions\":{},\"decision\":\"INDETERMINATE\",\"reasoning\":\"Insufficient evidence for automated decision escalate for human review\"}]}", "extra_context": "{\"model_id\":\"deepseek-r1\",\"evaluation_timestamp\":\"2026-05-07T09:15:00Z\",\"ve_cont\":0.82,\"ve_form\":0.85,\"ve_dom\":0.79,\"ve_scope\":0.81,\"ve_lang\":0.88,\"ve_decay_rate\":0.01,\"regime_classification\":\"R1\",\"cpd_score\":3.7,\"overall_grade\":\"B\",\"bis_t0\":62.5,\"bis_t03\":62.1,\"bis_t07\":61.8,\"bis_t10\":61.3,\"constraint_state_hash\":\"b4c7d2e8f1a3b6c9d0e5f2a7b8c1d4e9f0a3b6c7d2e5f8a1b4c9d0e3f6a7b8c1\",\"evidence_pack_hash\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"eu_ai_act_art9\":true,\"eu_ai_act_art61\":true,\"nist_ai_rmf\":true,\"nca\":false,\"turn_count\":15,\"correction_count\":2,\"drift_detected\":false}"}}}
+{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "evaluate_decision", "arguments": {"table_json": "{\"name\":\"mtcp_deployment_governance\",\"hit_policy\":\"FIRST\",\"rules\":[{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R3\"},{\"field\":\"data_classification\",\"op\":\">=\",\"value\":\"Restricted\"}],\"outcome\":\"DENY\",\"description\":\"MTCP-R1: Regime 3 model denied for restricted data processing\"},{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R1\"},{\"field\":\"overall_grade\",\"op\":\"in\",\"value\":[\"A\",\"B\"]}],\"outcome\":\"PERMIT\",\"description\":\"MTCP-R5: Model meets deployment-ready threshold\"},{\"conditions\":[],\"outcome\":\"INDETERMINATE\",\"description\":\"MTCP-DEFAULT: Insufficient evidence for automated decision escalate for human review\"}]}", "extra_context": "{\"model_id\":\"deepseek-r1\",\"evaluation_timestamp\":\"2026-05-07T09:15:00Z\",\"ve_cont\":0.82,\"ve_form\":0.85,\"ve_dom\":0.79,\"ve_scope\":0.81,\"ve_lang\":0.88,\"ve_decay_rate\":0.01,\"regime_classification\":\"R1\",\"cpd_score\":3.7,\"overall_grade\":\"B\",\"bis_t0\":62.5,\"bis_t03\":62.1,\"bis_t07\":61.8,\"bis_t10\":61.3,\"constraint_state_hash\":\"b4c7d2e8f1a3b6c9d0e5f2a7b8c1d4e9f0a3b6c7d2e5f8a1b4c9d0e3f6a7b8c1\",\"evidence_pack_hash\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"eu_ai_act_art9\":true,\"eu_ai_act_art61\":true,\"nist_ai_rmf\":true,\"nca\":false,\"turn_count\":15,\"correction_count\":2,\"drift_detected\":false,\"data_classification\":\"Internal\",\"jurisdiction\":\"single_language\"}", "instance_id": "deepseek-r1", "instance_version": "2025-01-20", "previous_hash": "4a2c8f1e9d3b7c6a5e0f2d1b8c9a7e6f3d2c1b0a9e8f7d6c5b4a3e2f1d0c9b8a"}}}
 ```
 
 Expected Receipt (PERMIT for DeepSeek-R1 as R1 Grade B):
 
 ```json
-{"jsonrpc": "2.0", "id": 6, "result": {"content": [{"type": "text", "text": "{\"decision\":\"PERMIT\",\"reasoning\":\"Model meets deployment-ready threshold\",\"status_code\":\"EVALUATED\",\"instance_id\":\"deepseek-r1\",\"instance_version\":\"2025-01-20\",\"timestamp\":\"2026-05-08T14:31:05Z\",\"previous_hash\":\"4a2c8f1e9d3b7c6a5e0f2d1b8c9a7e6f3d2c1b0a9e8f7d6c5b4a3e2f1d0c9b8a\",\"dimensions_checked\":[\"regime_classification\",\"overall_grade\"],\"errors\":[],\"receipt_hash\":\"9b5e2a1f3c7d8e4b6a0f1c2d3e5b7a8c9d0e1f4a5b6c7d8e9f0a1b2c3d4e5f6a\"}"}]}}
+{"jsonrpc": "2.0", "id": 6, "result": {"content": [{"type": "text", "text": "{\"decision\":\"PERMIT\",\"reasoning\":\"MTCP-R5: Model meets deployment-ready threshold\",\"status_code\":\"urn:oasis:names:tc:xacml:1.0:status:ok\",\"instance_id\":\"deepseek-r1\",\"instance_version\":\"2025-01-20\",\"timestamp\":\"2026-05-09T14:31:05Z\",\"previous_hash\":\"4a2c8f1e9d3b7c6a5e0f2d1b8c9a7e6f3d2c1b0a9e8f7d6c5b4a3e2f1d0c9b8a\",\"dimensions_checked\":[\"regime_classification\",\"overall_grade\"],\"errors\":[],\"receipt_hash\":\"9b5e2a1f3c7d8e4b6a0f1c2d3e5b7a8c9d0e1f4a5b6c7d8e9f0a1b2c3d4e5f6a\"}"}]}}
 ```

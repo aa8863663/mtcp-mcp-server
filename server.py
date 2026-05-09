@@ -46,7 +46,10 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "model_id": {"type": "string", "description": "Model identifier"}
+                "model_id": {"type": "string", "description": "Model identifier"},
+                "instance_id": {"type": "string", "description": "Optional instance_id for Receipt chain (defaults to model_id)"},
+                "instance_version": {"type": "string", "description": "Optional model version for Receipt chain"},
+                "previous_hash": {"type": "string", "description": "Optional previous receipt_hash for chain continuity (caller manages persistence)"}
             },
             "required": ["model_id"]
         }
@@ -333,6 +336,9 @@ def handle_get_mtcp_score(arguments):
 
 def handle_get_evidence_pack(arguments):
     model_id = arguments["model_id"]
+    instance_id = arguments.get("instance_id", model_id)
+    instance_version = arguments.get("instance_version")
+    previous_hash = arguments.get("previous_hash")
 
     conn = get_db_connection()
     try:
@@ -357,9 +363,9 @@ def handle_get_evidence_pack(arguments):
         timestamp = get_latest_timestamp(cur, model_id)
 
         bis_t0 = get_bis_at_temperature(cur, model_id, 0.0) or 0.0
-        bis_t03 = get_bis_at_temperature(cur, model_id, 0.2) or 0.0  # T=0.2 mapped to bis_t03
-        bis_t07 = get_bis_at_temperature(cur, model_id, 0.5) or 0.0  # T=0.5 mapped to bis_t07
-        bis_t10 = get_bis_at_temperature(cur, model_id, 0.8) or 0.0  # T=0.8 mapped to bis_t10
+        bis_t03 = get_bis_at_temperature(cur, model_id, 0.2) or 0.0
+        bis_t07 = get_bis_at_temperature(cur, model_id, 0.5) or 0.0
+        bis_t10 = get_bis_at_temperature(cur, model_id, 0.8) or 0.0
 
         turn_count, correction_count = get_session_stats(cur, model_id)
 
@@ -394,7 +400,14 @@ def handle_get_evidence_pack(arguments):
         }
 
         fields["evidence_pack_hash"] = compute_evidence_pack_hash(fields)
-        return json.dumps(fields)
+
+        result = dict(fields)
+        result["chain_args"] = {
+            "instance_id": instance_id,
+            "instance_version": instance_version,
+            "previous_hash": previous_hash
+        }
+        return json.dumps(result)
     finally:
         conn.close()
 
