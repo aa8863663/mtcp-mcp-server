@@ -2,7 +2,9 @@
 
 ## Overview
 
-MCP server exposing MTCP evaluation data to sdcgovernance 4.0.3 via JSON-RPC 2.0 over stdio.
+MCP server exposing MTCP evaluation data to sdcgovernance 4.0.4 via JSON-RPC 2.0 over stdio.
+
+**Breaking change in 4.0.4**: receipt_hash values produced under 4.0.3 will not validate under 4.0.4 due to canonicalization change (RFC 8785 with ensure_ascii=False). Any audit records produced under 4.0.3 must be treated as non-verifiable under 4.0.4.
 
 - Server name: mtcp-governance
 - Protocol version: 2024-11-05
@@ -96,7 +98,7 @@ For air-gapped sovereign deployment, the MTCP MCP server runs inside the Docker 
 Request:
 
 ```json
-{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "sdcgovernance", "version": "4.0.3"}}}
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "sdcgovernance", "version": "4.0.4"}}}
 ```
 
 Response:
@@ -165,6 +167,27 @@ Output JSON:
 - deployment_recommendation (string): COMMIT, DEFER, or REJECT
 - confidence (float): Classification confidence
 
+### verify_evidence_pack
+
+Verifies the integrity of an MTCP Evidence Pack by recomputing evidence_pack_hash using RFC 8785 canonical JSON.
+
+Input:
+- evidence_pack (object): Complete 24-field Evidence Pack JSON object
+
+Output JSON:
+- valid (boolean): Whether the hash matches
+- evidence_pack_hash (string): The hash received in the Evidence Pack
+- computed_hash (string): The hash recomputed from the 23 non-hash fields
+- message (string): Human-readable verification result
+
+### evaluate_decision optional arguments (sdcgovernance 4.0.4)
+
+When calling evaluate_decision via sdcgovernance, the following optional arguments are supported:
+- instance_id (string): Model identifier for Receipt chain
+- instance_version (string): Model version for Receipt chain
+- previous_hash (string or null): Previous receipt_hash for chain continuity. null for chain genesis
+- context_hash (string): Evidence Pack evidence_pack_hash value. Cryptographically links Receipt to the specific Evidence Pack
+
 ## Example Interactions
 
 ### Example 1: get_mtcp_score
@@ -211,23 +234,24 @@ Response:
 
 ## Integration Flow with sdcgovernance evaluate_decision
 
-The full integration flow for automated deployment governance (sdcgovernance 4.0.3):
+The full integration flow for automated deployment governance (sdcgovernance 4.0.4):
 
 1. sdcgovernance calls get_evidence_pack via MTCP MCP server
 2. MTCP MCP server queries PostgreSQL and returns Evidence Pack JSON
-3. sdcgovernance adds data_classification and jurisdiction to extra_context, passes to evaluate_decision
-4. DMN decision table evaluates Evidence Pack fields against array-style conditions
-5. evaluate_decision returns a tamper-evident Receipt with PERMIT, DENY, INDETERMINATE, or NOT_APPLICABLE
-6. Receipt includes receipt_hash (SHA-256 over canonical JSON) and is appended to the ReceiptChain
+3. sdcgovernance calls verify_evidence_pack to confirm Evidence Pack integrity
+4. sdcgovernance adds data_classification and jurisdiction to extra_context, passes to evaluate_decision with context_hash set to evidence_pack_hash
+5. DMN decision table evaluates Evidence Pack fields against array-style conditions
+6. evaluate_decision returns a tamper-evident Receipt with PERMIT, DENY, INDETERMINATE, or NOT_APPLICABLE
+7. Receipt includes context_hash binding it to the Evidence Pack and receipt_hash (SHA-256 over RFC 8785 canonical JSON) appended to the ReceiptChain
 
-Step 3 as a tool call:
+Step 4 as a tool call (with context_hash binding Receipt to Evidence Pack):
 
 ```json
-{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "evaluate_decision", "arguments": {"table_json": "{\"name\":\"mtcp_deployment_governance\",\"hit_policy\":\"FIRST\",\"rules\":[{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R3\"},{\"field\":\"data_classification\",\"op\":\">=\",\"value\":\"Restricted\"}],\"outcome\":\"DENY\",\"description\":\"MTCP-R1: Regime 3 model denied for restricted data processing\"},{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R1\"},{\"field\":\"overall_grade\",\"op\":\"in\",\"value\":[\"A\",\"B\"]}],\"outcome\":\"PERMIT\",\"description\":\"MTCP-R5: Model meets deployment-ready threshold\"},{\"conditions\":[],\"outcome\":\"INDETERMINATE\",\"description\":\"MTCP-DEFAULT: Insufficient evidence for automated decision escalate for human review\"}]}", "extra_context": "{\"model_id\":\"deepseek-r1\",\"evaluation_timestamp\":\"2026-05-07T09:15:00Z\",\"ve_cont\":0.82,\"ve_form\":0.85,\"ve_dom\":0.79,\"ve_scope\":0.81,\"ve_lang\":0.88,\"ve_decay_rate\":0.01,\"regime_classification\":\"R1\",\"cpd_score\":3.7,\"overall_grade\":\"B\",\"bis_t0\":62.5,\"bis_t03\":62.1,\"bis_t07\":61.8,\"bis_t10\":61.3,\"constraint_state_hash\":\"b4c7d2e8f1a3b6c9d0e5f2a7b8c1d4e9f0a3b6c7d2e5f8a1b4c9d0e3f6a7b8c1\",\"evidence_pack_hash\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"eu_ai_act_art9\":true,\"eu_ai_act_art61\":true,\"nist_ai_rmf\":true,\"nca\":false,\"turn_count\":15,\"correction_count\":2,\"drift_detected\":false,\"data_classification\":\"Internal\",\"jurisdiction\":\"single_language\"}", "instance_id": "deepseek-r1", "instance_version": "2025-01-20", "previous_hash": "4a2c8f1e9d3b7c6a5e0f2d1b8c9a7e6f3d2c1b0a9e8f7d6c5b4a3e2f1d0c9b8a"}}}
+{"jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": {"name": "evaluate_decision", "arguments": {"table_json": "{\"name\":\"mtcp_deployment_governance\",\"hit_policy\":\"FIRST\",\"rules\":[{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R3\"},{\"field\":\"data_classification\",\"op\":\">=\",\"value\":\"Restricted\"}],\"outcome\":\"DENY\",\"description\":\"MTCP-R1: Regime 3 model denied for restricted data processing\"},{\"conditions\":[{\"field\":\"regime_classification\",\"op\":\"==\",\"value\":\"R1\"},{\"field\":\"overall_grade\",\"op\":\"in\",\"value\":[\"A\",\"B\"]}],\"outcome\":\"PERMIT\",\"description\":\"MTCP-R5: Model meets deployment-ready threshold\"},{\"conditions\":[],\"outcome\":\"INDETERMINATE\",\"description\":\"MTCP-DEFAULT: Insufficient evidence for automated decision escalate for human review\"}]}", "extra_context": "{\"model_id\":\"deepseek-r1\",\"evaluation_timestamp\":\"2026-05-07T09:15:00Z\",\"ve_cont\":0.82,\"ve_form\":0.85,\"ve_dom\":0.79,\"ve_scope\":0.81,\"ve_lang\":0.88,\"ve_decay_rate\":0.01,\"regime_classification\":\"R1\",\"cpd_score\":3.7,\"overall_grade\":\"B\",\"bis_t0\":62.5,\"bis_t03\":62.1,\"bis_t07\":61.8,\"bis_t10\":61.3,\"constraint_state_hash\":\"b4c7d2e8f1a3b6c9d0e5f2a7b8c1d4e9f0a3b6c7d2e5f8a1b4c9d0e3f6a7b8c1\",\"evidence_pack_hash\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"eu_ai_act_art9\":true,\"eu_ai_act_art61\":true,\"nist_ai_rmf\":true,\"nca\":false,\"turn_count\":15,\"correction_count\":2,\"drift_detected\":false,\"data_classification\":\"Internal\",\"jurisdiction\":\"single_language\"}", "instance_id": "deepseek-r1", "instance_version": "2025-01-20", "previous_hash": null, "context_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}}}
 ```
 
 Expected Receipt (PERMIT for DeepSeek-R1 as R1 Grade B):
 
 ```json
-{"jsonrpc": "2.0", "id": 6, "result": {"content": [{"type": "text", "text": "{\"decision\":\"PERMIT\",\"reasoning\":\"MTCP-R5: Model meets deployment-ready threshold\",\"status_code\":\"urn:oasis:names:tc:xacml:1.0:status:ok\",\"instance_id\":\"deepseek-r1\",\"instance_version\":\"2025-01-20\",\"timestamp\":\"2026-05-09T14:31:05Z\",\"previous_hash\":\"4a2c8f1e9d3b7c6a5e0f2d1b8c9a7e6f3d2c1b0a9e8f7d6c5b4a3e2f1d0c9b8a\",\"dimensions_checked\":[\"regime_classification\",\"overall_grade\"],\"errors\":[],\"receipt_hash\":\"9b5e2a1f3c7d8e4b6a0f1c2d3e5b7a8c9d0e1f4a5b6c7d8e9f0a1b2c3d4e5f6a\"}"}]}}
+{"jsonrpc": "2.0", "id": 6, "result": {"content": [{"type": "text", "text": "{\"decision\":\"PERMIT\",\"reasoning\":\"MTCP-R5: Model meets deployment-ready threshold\",\"status_code\":\"urn:oasis:names:tc:xacml:1.0:status:ok\",\"instance_id\":\"deepseek-r1\",\"instance_version\":\"2025-01-20\",\"timestamp\":\"2026-05-10T14:31:05Z\",\"previous_hash\":null,\"dimensions_checked\":[\"regime_classification\",\"overall_grade\"],\"errors\":[],\"context_hash\":\"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\",\"receipt_hash\":\"9b5e2a1f3c7d8e4b6a0f1c2d3e5b7a8c9d0e1f4a5b6c7d8e9f0a1b2c3d4e5f6a\"}"}]}}
 ```

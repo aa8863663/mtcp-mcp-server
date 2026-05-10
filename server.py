@@ -64,6 +64,17 @@ TOOLS = [
             },
             "required": ["model_id"]
         }
+    },
+    {
+        "name": "verify_evidence_pack",
+        "description": "Verifies the integrity of an MTCP Evidence Pack by recomputing evidence_pack_hash using RFC 8785 canonical JSON",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "evidence_pack": {"type": "object", "description": "Complete 24-field Evidence Pack JSON object"}
+            },
+            "required": ["evidence_pack"]
+        }
     }
 ]
 
@@ -126,7 +137,7 @@ def check_db_connection():
 
 
 def compute_evidence_pack_hash(fields):
-    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -438,10 +449,41 @@ def handle_get_regime_classification(arguments):
         conn.close()
 
 
+def handle_verify_evidence_pack(arguments):
+    evidence_pack = arguments["evidence_pack"]
+    received_hash = evidence_pack.get("evidence_pack_hash")
+    if not received_hash:
+        return json.dumps({
+            "valid": False,
+            "evidence_pack_hash": None,
+            "computed_hash": None,
+            "message": "Evidence Pack missing evidence_pack_hash field"
+        })
+
+    fields_for_hash = {k: v for k, v in evidence_pack.items() if k != "evidence_pack_hash"}
+    computed_hash = compute_evidence_pack_hash(fields_for_hash)
+
+    if computed_hash == received_hash:
+        return json.dumps({
+            "valid": True,
+            "evidence_pack_hash": received_hash,
+            "computed_hash": computed_hash,
+            "message": "Evidence Pack integrity verified"
+        })
+    else:
+        return json.dumps({
+            "valid": False,
+            "evidence_pack_hash": received_hash,
+            "computed_hash": computed_hash,
+            "message": f"Hash mismatch: received {received_hash} but computed {computed_hash}"
+        })
+
+
 TOOL_HANDLERS = {
     "get_mtcp_score": handle_get_mtcp_score,
     "get_evidence_pack": handle_get_evidence_pack,
-    "get_regime_classification": handle_get_regime_classification
+    "get_regime_classification": handle_get_regime_classification,
+    "verify_evidence_pack": handle_verify_evidence_pack
 }
 
 
